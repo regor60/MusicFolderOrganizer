@@ -25,6 +25,7 @@ public class MainActivity extends Activity {
     private LinearLayout list;
     private TextView status;
     private Button moveButton;
+    private Button createFolderButton;
     private Uri root;
     private final ArrayList<Song> songs = new ArrayList<>();
     private final ArrayList<Folder> folders = new ArrayList<>();
@@ -63,6 +64,11 @@ public class MainActivity extends Activity {
                     Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
             startActivityForResult(i,PICK_MUSIC);
         });
+        createFolderButton=new Button(this);
+        createFolderButton.setText("Create artist folder");
+        createFolderButton.setEnabled(false);
+        createFolderButton.setOnClickListener(v -> showCreateFolderDialog());
+        page.addView(createFolderButton);
         status=new TextView(this); status.setText("No folder selected");
         status.setPadding(0,dp(8),0,dp(8)); page.addView(status);
         moveButton=new Button(this); moveButton.setText("Move checked songs");
@@ -83,9 +89,69 @@ public class MainActivity extends Activity {
         root=data.getData();
         try {getContentResolver().takePersistableUriPermission(root,Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);}
         catch(Exception ignored) {}
-        status.setText("Scanning loose files and reading artist tags…");
-        list.removeAllViews(); moveButton.setEnabled(false);
+        rescan();
+    }
+
+    private void rescan() {
+        if(root==null)return;
+        status.setText("Scanning loose files and artist folders…");
+        list.removeAllViews();
+        moveButton.setEnabled(false);
+        createFolderButton.setEnabled(false);
         executor.execute(this::scan);
+    }
+
+    private void showCreateFolderDialog() {
+        if(root==null)return;
+        EditText entry=new EditText(this);
+        entry.setSingleLine(true);
+        entry.setHint("Artist name");
+        LinearLayout wrap=new LinearLayout(this);
+        wrap.setPadding(dp(20),0,dp(20),0);
+        wrap.addView(entry,new LinearLayout.LayoutParams(-1,-2));
+        AlertDialog dialog=new AlertDialog.Builder(this)
+                .setTitle("Create artist folder")
+                .setMessage("Create a new subfolder inside your selected Music folder. The app will then rescan all loose songs and suggest matching folders.")
+                .setView(wrap)
+                .setNegativeButton("Cancel",null)
+                .setPositiveButton("Create",null)
+                .create();
+        dialog.setOnShowListener(ignored->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+            String name=entry.getText().toString().trim();
+            if(name.isEmpty()||name.equals(".")||name.equals("..")||name.contains("/")||name.contains("\\\\")) {
+                entry.setError("Enter a valid artist folder name");return;
+            }
+            for(Folder folder:folders)if(folder.name.equalsIgnoreCase(name)) {
+                entry.setError("This folder already exists");return;
+            }
+            dialog.dismiss();
+            status.setText("Creating folder: "+name+"…");
+            moveButton.setEnabled(false);
+            createFolderButton.setEnabled(false);
+            executor.execute(()->{
+                String failure=null;
+                try {
+                    Uri parent=DocumentsContract.buildDocumentUriUsingTree(root,DocumentsContract.getTreeDocumentId(root));
+                    Uri created=DocumentsContract.createDocument(getContentResolver(),parent,
+                            DocumentsContract.Document.MIME_TYPE_DIR,name);
+                    if(created==null)throw new IllegalStateException("Storage provider did not create folder");
+                }catch(Exception ex){failure=ex.getMessage();}
+                if(failure==null) {
+                    main.post(()->status.setText("Folder created. Rescanning Music…"));
+                    scan();
+                }else{
+                    final String error=failure;
+                    main.post(()->{
+                        createFolderButton.setEnabled(true);
+                        updateMoveButton();
+                        status.setText("Could not create folder: "+error);
+                        new AlertDialog.Builder(this).setTitle("Folder not created")
+                                .setMessage(error).setPositiveButton("OK",null).show();
+                    });
+                }
+            });
+        }));
+        dialog.show();
     }
 
     private void scan() {
@@ -119,6 +185,7 @@ public class MainActivity extends Activity {
         final String issue=error;
         main.post(()-> {
             songs.clear(); songs.addAll(found); folders.clear(); folders.addAll(dirs);
+            createFolderButton.setEnabled(root!=null);
             if(issue!=null) {
                 status.setText("Scan failed: "+issue);
                 return;
@@ -195,11 +262,13 @@ public class MainActivity extends Activity {
     }
 
     private void chooseDestination(Song s) {
-        String[] names=new String[folders.size()+1];
+        String[] names=new String[folders.size()+2];
         names[0]="No destination";
         for(int i=0;i<folders.size();i++)names[i+1]=folders.get(i).name;
+        names[names.length-1]="+ Create new artist folder…";
         new AlertDialog.Builder(this).setTitle("Destination for "+s.name)
             .setItems(names,(d,which)->{
+                if(which==names.length-1){showCreateFolderDialog();return;}
                 s.destination=which==0?null:folders.get(which-1);
                 s.checked=false;drawRows();
             }).show();
